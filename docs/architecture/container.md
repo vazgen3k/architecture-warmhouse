@@ -12,16 +12,16 @@ System(WarmHouse, "WarmHouse System", "Система управления ум�
 Container_Boundary(WarmHouse, "WarmHouse System"){
     Container(WebApp, "Web Application", "Java, Spring", "Управляет взаимодействием с устройствами")
     Container(MobileApp, "Mobile Application", "Kotlin, Swift", "Управляет взаимодействием с устройствами")
-    Container(Automation, "automation-service", "Go", "Программирование устройств/настройка автоматических сценариев и управление")
-    Container(DeviceManagement, "device-management-service", "Go", "Управление устройствами. Регистрация устройств и отправка команд. Контроль доступности")
-    Container(Monitoring, "monitoring-service", "Go", "Сбор данных, хранение показаний, аналитика и формирование уведомлений")
+    Container(Automation, "Automation-service", "Go", "Программирование устройств/настройка автоматических сценариев и управление")
+    Container(DeviceManagement, "Device-management-service", "Go", "Управление устройствами. Регистрация устройств и отправка команд. Контроль доступности")
+    Container(Monitoring, "Monitoring-service", "Go", "Сбор данных, хранение показаний, аналитика и формирование уведомлений")
     
     ContainerQueue(RabbitMQ, "RabbitMQ", "Брокер сообщений для асинхронной передачи команд и данных со счетчиков")
     
     
-  ContainerDb(DeviceDb, "device-management-db", "PostgreSQL", "Устройства, привязки, состояние доступности, статусы команд")
-  ContainerDb(AutomationDb, "automation-db", "PostgreSQL", "Сценарии автоматизации")
-  ContainerDb(MonitoringDb, "monitoring-db", "PostgreSQL", "История показаний счетчиков")
+  ContainerDb(DeviceDb, "Device-management-db", "PostgreSQL", "Устройства, привязки, состояние доступности, статусы команд")
+  ContainerDb(AutomationDb, "Automation-db", "PostgreSQL", "Сценарии автоматизации")
+  ContainerDb(MonitoringDb, "Monitoring-db", "PostgreSQL", "История показаний счетчиков")
 }
 System_Ext(Sensors, "Датчики", "Датчики, установленные в домах пользователей")
 System_Ext(Relays, "Реле", "Реле для управления устройствами")
