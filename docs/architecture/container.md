@@ -16,7 +16,7 @@ Container_Boundary(WarmHouse, "WarmHouse System"){
     Container(DeviceManagement, "device-management-service", "Go", "Управление устройствами. Регистрация устройств и отправка команд. Контроль доступности")
     Container(Monitoring, "monitoring-service", "Go", "Сбор данных, хранение показаний, аналитика и формирование уведомлений")
     
-    ContainerQueue(RabbitMQ, "RabbitMQ", "5", "Брокер сообщений для асинхронной передачи команд и данных со счетчиков")
+    ContainerQueue(RabbitMQ, "RabbitMQ", "Брокер сообщений для асинхронной передачи команд и данных со счетчиков")
     
     
   ContainerDb(DeviceDb, "device-management-db", "PostgreSQL", "Устройства, привязки, состояние доступности, статусы команд")
