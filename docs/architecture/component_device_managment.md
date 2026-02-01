@@ -7,7 +7,7 @@ title Device Management — Component Diagram
 Container_Boundary(boundary, "Device Management"){
 Component(API, "Device API Controller", "HTTP API", "Приём запросов от UI и automation")
 Component(DeviceRegistry, "Device Registry", "Регистрация и привязка устройств")
-Component(DeviceState, "Device State Manager", "Управление состоянием устройств")
+Component(DeviceState, "Device State Manager", "Управление состоянием устройств и команд")
 Component(CommandProcessor, "Command Processor", "Обработка и валидация команд")
 Component(CommandPublisher, "Command Publisher", "RabbitMQ Adapter", "Публикация команд в брокер")
 Component(CommandListener, "Command Status Listener", "RabbitMQ Consumer", "Обработка статусов команд")
