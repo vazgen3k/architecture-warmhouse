@@ -3,7 +3,6 @@
 title Device Management — Component Diagram
 
 !includeurl https://raw.githubusercontent.com/RicardoNiepel/C4-PlantUML/master/C4_Component.puml
-!includeurl https://raw.githubusercontent.com/RicardoNiepel/C4-PlantUML/master/C4_Container.puml
 
 Container_Boundary(boundary, "Device Management"){
 Component(API, "Device API Controller", "HTTP API", "Приём запросов от UI и automation")
