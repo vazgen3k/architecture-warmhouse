@@ -1,0 +1,641 @@
+openapi: 3.0.0
+info:
+  title: WarmHouse Device Management API
+  version: 1.0.0
+  description: |
+    API микросервиса device-management-service для управления устройствами умного дома.
+
+    Основные функции:
+    - Отправка команды устройству асинхронно через брокер сообщений (RabbitMQ)
+      с подтверждением постановки команды в очередь и возвратом commandId
+    - Получение статуса выполнения команды по commandId (polling для фронта)
+    - Получение информации об устройстве и его текущем состоянии
+    - Получение списка поддерживаемых типов устройств (каталог) для подключения
+
+servers:
+  - url: https://api.warmhouse.example.com
+    description: Production сервер
+  - url: http://localhost:8081
+    description: Development сервер
+
+tags:
+  - name: Commands
+    description: Отправка команд устройствам и отслеживание выполнения
+  - name: Devices
+    description: Операции с устройствами (получение информации и состояния)
+  - name: Catalog
+    description: Каталог поддерживаемых типов устройств (для подключения)
+
+paths:
+  /api/v1/devices/{deviceId}/commands:
+    post:
+      summary: Отправить команду устройству (асинхронно)
+      description: |
+        Создаёт команду для устройства и публикует её в брокер сообщений (RabbitMQ) асинхронно.
+        В ответ возвращается commandId для отслеживания статуса выполнения.
+
+        Важно:
+        - Ответ 202 подтверждает, что команда успешно поставлена в очередь (опубликована в брокер).
+        - Это не означает, что устройство уже выполнило команду.
+        - Проверка результата выполняется через GET /api/v1/commands/{commandId} (polling).
+
+        Типовой поток:
+        1) Проверка устройства (существует ли, доступно ли, поддерживает ли тип команды).
+        2) Создание записи команды (commandId) со статусом CREATED.
+        3) Публикация команды в брокер.
+        4) Обновление статуса на SENT (если публикация успешна).
+      tags:
+        - Commands
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Уникальный идентификатор устройства
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCommandRequest'
+            examples:
+              heatOn:
+                summary: Включить отопление
+                value:
+                  commandType: HEAT_ON
+                  payload:
+                    targetTemp: 22
+                  idempotencyKey: "b2e9d9e2-06f3-4b6a-8d7e-9f5a42f7b88a"
+              gateOpen:
+                summary: Открыть ворота
+                value:
+                  commandType: GATE_OPEN
+                  payload:
+                    mode: "auto"
+                  idempotencyKey: "7b5c1a0a-2c1d-4d3c-9a1b-6c55a8c2b1e0"
+      responses:
+        '202':
+          description: |
+            Команда принята и успешно поставлена в очередь на выполнение (опубликована в брокер).
+            Возвращается commandId для дальнейшего отслеживания статуса.
+          headers:
+            Retry-After:
+              description: Рекомендуемый интервал (в секундах) между запросами polling к GET /commands/{commandId}
+              schema:
+                type: integer
+                example: 2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandQueuedResponse'
+              examples:
+                queued:
+                  summary: Команда поставлена в очередь
+                  value:
+                    commandId: "3e5a1ed0-1a8b-4c2d-9f0e-7d2b5ad7a5c1"
+                    deviceId: "c6b8e0d2-1d9e-4a0f-9a2a-4d1b9f8f2f55"
+                    status: "SENT"
+                    queuedAt: "2026-02-03T12:10:01Z"
+        '400':
+          description: Неверный формат запроса (ошибка валидации JSON, неизвестные поля, неверные типы)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalidJson:
+                  summary: Некорректное тело запроса
+                  value:
+                    error: "Invalid request body"
+                    code: "INVALID_REQUEST"
+                    details:
+                      field: "payload"
+                      message: "Must be an object"
+        '401':
+          description: Пользователь не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                unauthorized:
+                  summary: Нет токена
+                  value:
+                    error: "Unauthorized"
+                    code: "UNAUTHORIZED"
+        '403':
+          description: Недостаточно прав на выполнение команды
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                forbidden:
+                  summary: Нет доступа к устройству
+                  value:
+                    error: "Forbidden"
+                    code: "FORBIDDEN"
+        '404':
+          description: Устройство не найдено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                notFound:
+                  summary: Device not found
+                  value:
+                    error: "Device not found"
+                    code: "DEVICE_NOT_FOUND"
+        '409':
+          description: Конфликт идемпотентности — команда с таким idempotencyKey уже создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                idempotencyConflict:
+                  summary: Повторный запрос с тем же idempotencyKey
+                  value:
+                    error: "Command with this idempotencyKey already exists"
+                    code: "IDEMPOTENCY_CONFLICT"
+                    details:
+                      existingCommandId: "3e5a1ed0-1a8b-4c2d-9f0e-7d2b5ad7a5c1"
+        '422':
+          description: Команда не может быть принята из-за бизнес-ограничений (устройство offline, команда не поддерживается)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                deviceOffline:
+                  summary: Устройство недоступно
+                  value:
+                    error: "Device is offline"
+                    code: "DEVICE_OFFLINE"
+                commandNotSupported:
+                  summary: Команда не поддерживается устройством
+                  value:
+                    error: "Command type is not supported for this device"
+                    code: "COMMAND_NOT_SUPPORTED"
+        '503':
+          description: Невозможно поставить команду в очередь (брокер недоступен / таймаут публикации)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                brokerUnavailable:
+                  summary: Брокер сообщений недоступен
+                  value:
+                    error: "Message broker unavailable"
+                    code: "BROKER_UNAVAILABLE"
+
+  /api/v1/commands/{commandId}:
+    get:
+      summary: Получить статус выполнения команды (polling)
+      description: |
+        Возвращает текущий статус выполнения команды по commandId.
+        Предназначено для фронта (polling) после отправки команды через POST /devices/{deviceId}/commands.
+
+        Рекомендация по polling:
+        - интервал 1–3 секунды (можно ориентироваться на заголовок Retry-After из ответа POST)
+        - прекращать polling при финальном статусе: ACK / FAILED
+      tags:
+        - Commands
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: commandId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Идентификатор команды
+      responses:
+        '200':
+          description: Статус команды получен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandStatusResponse'
+              examples:
+                queued:
+                  summary: Команда в очереди
+                  value:
+                    commandId: "3e5a1ed0-1a8b-4c2d-9f0e-7d2b5ad7a5c1"
+                    deviceId: "c6b8e0d2-1d9e-4a0f-9a2a-4d1b9f8f2f55"
+                    commandType: "HEAT_ON"
+                    status: "SENT"
+                    createdAt: "2026-02-03T12:10:00Z"
+                    updatedAt: "2026-02-03T12:10:01Z"
+                    error: null
+                ack:
+                  summary: Команда успешно выполнена
+                  value:
+                    commandId: "3e5a1ed0-1a8b-4c2d-9f0e-7d2b5ad7a5c1"
+                    deviceId: "c6b8e0d2-1d9e-4a0f-9a2a-4d1b9f8f2f55"
+                    commandType: "HEAT_ON"
+                    status: "ACK"
+                    createdAt: "2026-02-03T12:10:00Z"
+                    updatedAt: "2026-02-03T12:10:03Z"
+                    error: null
+                failed:
+                  summary: Команда выполнена с ошибкой
+                  value:
+                    commandId: "3e5a1ed0-1a8b-4c2d-9f0e-7d2b5ad7a5c1"
+                    deviceId: "c6b8e0d2-1d9e-4a0f-9a2a-4d1b9f8f2f55"
+                    commandType: "HEAT_ON"
+                    status: "FAILED"
+                    createdAt: "2026-02-03T12:10:00Z"
+                    updatedAt: "2026-02-03T12:10:04Z"
+                    error: "Device reported overload"
+        '401':
+          description: Пользователь не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                unauthorized:
+                  summary: Нет токена
+                  value:
+                    error: "Unauthorized"
+                    code: "UNAUTHORIZED"
+        '403':
+          description: Недостаточно прав на просмотр статуса команды
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Команда не найдена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                notFound:
+                  summary: Command not found
+                  value:
+                    error: "Command not found"
+                    code: "COMMAND_NOT_FOUND"
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/devices/{deviceId}:
+    get:
+      summary: Получить информацию об устройстве и его состоянии
+      description: |
+        Возвращает информацию об устройстве (тип, серийный номер, имя) и текущее операционное состояние:
+        - availability (ONLINE/OFFLINE/DEGRADED)
+        - lastSeenAt (последняя активность)
+      tags:
+        - Devices
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Уникальный идентификатор устройства
+      responses:
+        '200':
+          description: Устройство найдено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Device'
+              examples:
+                device:
+                  summary: Пример устройства
+                  value:
+                    id: "c6b8e0d2-1d9e-4a0f-9a2a-4d1b9f8f2f55"
+                    houseId: "8f2d9b10-4c65-4b9f-a7a2-2e8a8b88f7a1"
+                    deviceType: "heating_relay"
+                    serialNumber: "SN-12345-HEAT"
+                    name: "Реле отопления"
+                    availability: "DEGRADED"
+                    lastSeenAt: "2026-02-03T10:40:00Z"
+                    createdAt: "2026-01-10T09:00:00Z"
+        '401':
+          description: Пользователь не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Недостаточно прав для просмотра устройства
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Устройство не найдено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                notFound:
+                  summary: Device not found
+                  value:
+                    error: "Device not found"
+                    code: "DEVICE_NOT_FOUND"
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/device-types:
+    get:
+      summary: Получить список всех доступных типов устройств (для подключения)
+      description: |
+        Возвращает каталог типов устройств, которые поддерживает экосистема WarmHouse.
+        Используется фронтом при подключении устройства, чтобы показать пользователю доступные варианты.
+      tags:
+        - Catalog
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: protocol
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [http, mqtt, zigbee, zwave, other]
+          description: Фильтр по протоколу подключения
+        - name: vendor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Фильтр по вендору/производителю
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+          description: Количество элементов на странице
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Смещение
+      responses:
+        '200':
+          description: Успешное получение списка типов устройств
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DeviceType'
+                  meta:
+                    $ref: '#/components/schemas/ListMeta'
+              examples:
+                deviceTypes:
+                  summary: Пример ответа
+                  value:
+                    data:
+                      - id: "a7d5f5f1-0c3c-4b3b-9c2a-2f8f7f1d5f11"
+                        code: "heating_relay"
+                        name: "Реле отопления"
+                        vendor: "PartnerVendor"
+                        protocol: "other"
+                        capabilities: ["HEAT_ON", "HEAT_OFF"]
+                      - id: "b2f1a3c4-8f3d-4e2a-9c7f-6b8f2d1a9e01"
+                        code: "temperature_sensor"
+                        name: "Датчик температуры"
+                        vendor: "PartnerVendor"
+                        protocol: "other"
+                        capabilities: ["TELEMETRY_TEMPERATURE"]
+                    meta:
+                      total: 2
+                      limit: 100
+                      offset: 0
+                      returned: 2
+        '400':
+          description: Неверные параметры запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Пользователь не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Недостаточно прав для просмотра каталога типов устройств
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT токен, полученный при входе
+
+  schemas:
+    CreateCommandRequest:
+      type: object
+      required: [commandType]
+      properties:
+        commandType:
+          type: string
+          enum: [HEAT_ON, HEAT_OFF, LIGHT_ON, LIGHT_OFF, GATE_OPEN, GATE_CLOSE]
+          description: Тип команды
+        payload:
+          type: object
+          description: Параметры команды (зависят от commandType)
+          additionalProperties: true
+        idempotencyKey:
+          type: string
+          description: |
+            Ключ идемпотентности для безопасных повторов запроса.
+            При повторном запросе с тем же ключом сервис возвращает конфликт (409) и ссылку на существующую команду.
+          minLength: 8
+          maxLength: 128
+
+    CommandQueuedResponse:
+      type: object
+      required: [commandId, deviceId, status, queuedAt]
+      properties:
+        commandId:
+          type: string
+          format: uuid
+          description: Идентификатор команды для отслеживания статуса
+        deviceId:
+          type: string
+          format: uuid
+          description: Идентификатор устройства
+        status:
+          type: string
+          enum: [SENT]
+          description: Подтверждение постановки команды в очередь
+        queuedAt:
+          type: string
+          format: date-time
+          description: Время, когда команда была поставлена в очередь (опубликована в брокер)
+
+    CommandStatusResponse:
+      type: object
+      required: [commandId, deviceId, commandType, status, createdAt]
+      properties:
+        commandId:
+          type: string
+          format: uuid
+          description: Идентификатор команды
+        deviceId:
+          type: string
+          format: uuid
+          description: Идентификатор устройства
+        commandType:
+          type: string
+          enum: [HEAT_ON, HEAT_OFF, LIGHT_ON, LIGHT_OFF, GATE_OPEN, GATE_CLOSE]
+          description: Тип команды
+        status:
+          type: string
+          enum: [SENT, IN_PROGRESS, ACK, FAILED]
+          description: |
+            Текущий статус выполнения команды.
+            Финальные статусы: ACK, FAILED.
+        error:
+          type: string
+          nullable: true
+          description: Текст ошибки (только для FAILED)
+        createdAt:
+          type: string
+          format: date-time
+          description: Время создания команды
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Время последнего обновления статуса
+
+    Device:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Уникальный идентификатор устройства
+        houseId:
+          type: string
+          format: uuid
+          description: Идентификатор дома, к которому привязано устройство
+        deviceType:
+          type: string
+          description: Код типа устройства (из каталога device-types)
+          example: "heating_relay"
+        serialNumber:
+          type: string
+          description: Серийный номер устройства
+        name:
+          type: string
+          description: Название устройства (для UI)
+        availability:
+          type: string
+          enum: [ONLINE, OFFLINE, DEGRADED]
+          description: Операционное состояние устройства (доступность)
+        lastSeenAt:
+          type: string
+          format: date-time
+          description: Когда устройство в последний раз было на связи
+        createdAt:
+          type: string
+          format: date-time
+          description: Дата и время добавления устройства в систему
+
+    DeviceType:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Идентификатор типа устройства
+        code:
+          type: string
+          description: Код типа устройства (уникальный)
+        name:
+          type: string
+          description: Человекочитаемое название типа устройства
+        vendor:
+          type: string
+          description: Производитель/партнёр
+        protocol:
+          type: string
+          description: Протокол подключения (логическое поле)
+        capabilities:
+          type: array
+          description: Список поддерживаемых возможностей/команд
+          items:
+            type: string
+
+    ListMeta:
+      type: object
+      properties:
+        total:
+          type: integer
+          description: Общее количество элементов
+        limit:
+          type: integer
+          description: Лимит на страницу
+          example: 100
+        offset:
+          type: integer
+          description: Смещение
+          example: 0
+        returned:
+          type: integer
+          description: Количество возвращённых элементов
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Описание ошибки
+        code:
+          type: string
+          description: Код ошибки для программной обработки
+        details:
+          type: object
+          description: Дополнительные сведения об ошибке (опционально)
+          additionalProperties: true
